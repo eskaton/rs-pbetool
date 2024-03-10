@@ -3,12 +3,15 @@ extern crate clap;
 
 use std::env;
 
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use crypto::{aes, blockmodes, buffer, symmetriccipher};
 use crypto::buffer::{BufferResult, ReadBuffer, WriteBuffer};
 use crypto::digest::Digest;
 use crypto::sha2::Sha256;
-use rand::{OsRng, Rng};
+use rand::prelude::*;
+use base64::prelude::*;
+use clap::builder::Styles;
+use clap::builder::styling::AnsiColor;
 
 
 struct Config {
@@ -20,14 +23,14 @@ struct Config {
 
 impl Config {
     fn new(matches: &ArgMatches) -> Config {
-        let message = matches.value_of("INPUT").unwrap().to_string();
-        let decrypt = matches.is_present("decrypt");
-        let salt = match matches.value_of("salt") {
-            Some(s) => Some(base64::decode(&s.to_string())
+        let message = matches.get_one::<String>("INPUT").unwrap().to_string();
+        let decrypt = matches.get_flag("decrypt");
+        let salt = match matches.get_one::<String>("salt") {
+            Some(s) => Some(BASE64_STANDARD.decode(&s.to_string())
                 .map(|s| s.to_vec()).expect("Invalid salt")),
             None => None
         };
-        let password = matches.value_of("password").unwrap().to_string();
+        let password = matches.get_one::<String>("password").unwrap().to_string();
 
         Config { message, decrypt, salt, password }
     }
@@ -198,7 +201,7 @@ fn format_password(password: &String) -> Vec<u8> {
 
 fn do_decrypt(config: &Config) -> Vec<u8> {
     let formatted_password = format_password(&config.password);
-    let bytes = base64::decode(&config.message).unwrap();
+    let bytes = BASE64_STANDARD.decode(&config.message).unwrap();
     let ref salt = &bytes[..16];
     let ref message = &bytes[16..];
     let key = derive_key(1, 256, salt, &formatted_password);
@@ -209,15 +212,12 @@ fn do_decrypt(config: &Config) -> Vec<u8> {
 
 fn do_encrypt(config: &Config) -> String {
     let formatted_password = format_password(&config.password);
-    let salt: Vec<u8> = match config.salt.clone() {
-        Some(s) => s,
-        None => {
-            let mut rng = OsRng::new().ok().unwrap();
-            let mut s = vec![0; 16];
-            rng.fill_bytes(&mut s);
-            s
-        }
-    };
+    let salt: Vec<u8> = config.salt.clone().unwrap_or_else(|| {
+        let mut rng = rand::thread_rng();
+        let mut s = vec![0; 16];
+        rng.fill_bytes(&mut s);
+        s
+    });
 
     let key = derive_key(1, 256, &salt, &formatted_password);
     let iv = derive_key(2, 128, &salt, &formatted_password);
@@ -227,30 +227,35 @@ fn do_encrypt(config: &Config) -> String {
     encrypted_data.extend(salt);
     encrypted_data.extend(encrypted_message);
 
-    return base64::encode(&encrypted_data);
+    return BASE64_STANDARD.encode(&encrypted_data);
 }
 
 fn parse_args(args: &Vec<String>) -> ArgMatches {
-    Command::new("pbe-tool")
+    let styles = Styles::styled()
+        .header(AnsiColor::Yellow.on_default())
+        .usage(AnsiColor::Green.on_default())
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Green.on_default());
+
+    Command::new("pbetool")
+        .styles(styles)
         .about("Password Based Encryption Tool")
         .version(crate_version!())
-        .arg(Arg::with_name("decrypt")
+        .arg(Arg::new("decrypt")
             .short('d')
             .long("decrypt")
-            .takes_value(false)
+            .action(ArgAction::SetTrue)
             .help("Decrypt instead of encrypt"))
-        .arg(Arg::with_name("password")
+        .arg(Arg::new("password")
             .short('p')
             .long("password")
-            .takes_value(true)
             .required(true)
             .help("A password"))
-        .arg(Arg::with_name("salt")
+        .arg(Arg::new("salt")
             .short('s')
             .long("salt")
-            .takes_value(true)
             .help("A Base64 encoded salt"))
-        .arg(Arg::with_name("INPUT")
+        .arg(Arg::new("INPUT")
             .help("Sets the input to use")
             .required(true)
             .index(1))
